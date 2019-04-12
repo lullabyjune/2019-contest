@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <title>推箱子</title>
+  <meta name="viewport" content="width=device-width">
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      padding: 0;
+      margin: 0;
+    }
+
+    .container {
+      position: relative;
+      padding-top: 16px;
+      /* top: 50%; */
+      text-align: center;
+      /* transform: translateY(-50%) */
+    }
+
+    .container .txt-info {
+      margin: 16px 0;
+    }
+
+    .modal-bg {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      top: 0;
+      left: 0;
+      background: rgba(0, 0, 0, 0.8);
+      z-index: -2;
+      opacity: 0;
+      transition: all;
+      transition-duration: 0.5s;
+    }
+
+    .modal {
+      position: absolute;
+      width: 300px;
+      /* height: 300px; */
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      background-color: beige;
+      text-align: center;
+      transition: opacity .3s;
+      opacity: 0;
+      z-index: -1;
+    }
+
+    .modal .header {
+      font-size: 1.8rem;
+    }
+
+    .modal .header .close {
+      display: inline-block;
+      position: absolute;
+      right: 16px;
+      color: red;
+      cursor: pointer;
+    }
+
+    .modal .body, .modal .body .btn-container {
+      margin: 16px 0;
+    }
+
+    .modal .body .btn-container div{
+      display: inline-block;
+    }
+  </style>
+</head>
+<body onkeydown="keyDown()">
+  <div class="container">
+      <canvas id="canvas" width="560" height="560"></canvas>
+      <div class="info-container">
+        <div class="txt-info"></div>
+        <div class="btn-container">
+          <button onclick="nextLevel(false)">上一关</button>
+          <button onclick="nextLevel(true)">下一关</button>
+          <button onclick="nextLevel(0)">重玩本关</button>
+          
+          <button onclick="showHelp()">游戏说明</button>
+          <div style="margin-top: 16px">
+            <input type="text" id="chooseLevel" placeholder="输入关卡等级">
+            <button onclick="chooseLevel()">点击跳关</button>
+          </div>
+        </div>
+      </div>
+  </div>
+
+  <div class="modal">
+    <div class="header">
+      <span>
+          游戏通关！
+      </span>
+      <div class="close" onclick="closeModal()">X</div>
+    </div>
+    <div class="body">
+      恭喜您游戏通关
+      <div class="btn-container">
+        <div>
+          <button onclick="closeModal();nextLevel(0)">我想再玩一次！</button>
+        </div>
+        <div>
+          <button onclick="closeModal();nextLevel(true)">进入下一关</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-bg"></div>
+
+  <script src="./config/mapData.js"></script>
+  <script>
+
+    //  整个游戏对象
+    //  对于地图数据
+    //  0 ----->  地板。就是绿色那个-0-
+    //  1 ----->  墙。虽然这图看着是个路障-0-。就当他是墙吧。
+    //  2 ----->  珠子。就是要推箱子到的地方
+    //  3 ----->  箱子。
+    //  4 ----->  人物当前的位置。人物有4个朝向分别对应的是img里面四个方向的图
+    //  5 ----->  表示箱子和珠子重叠的一个状态。也就是部分完成游戏目标-0-
+    //  and then -0-。没做移动端优化。嘻嘻嘻-0-。
+    function MoveBox (ctx, infoDom, successFn) {
+      this.ctx = ctx;
+      this.infoDom = infoDom;
+      this._curLevel = 0;
+      this._curPersonDir = 'down';
+      this._curPersonPos = null;
+      this._curMap = null;
+      this._steps = 0;
+      this.isShowHelp = false;
+      this._successCb = successFn;
+      this._imgs = {
+        ball: './img/ball.png',
+        floor: './img/floor.gif',
+        box: './img/box.png',
+        down: './img/down.png',
+        left: './img/left.png',
+        right: './img/right.png',
+        up: './img/up.png',
+        wall: './img/wall.png'
+      };
+    }
+
+    //  暴露给外部的入口Api
+    MoveBox.prototype.init = function () {
+      //  先预加载图片，方便后续canvas绘图直接用
+      this._preloadImg(this._imgs, (resImgs) => {
+        this._imgs = resImgs;
+        // console.log(this._imgs)
+        //  真实的初始化函数
+        this._init()
+      });
+    }
+
+    //  预加载用到的几张图片。后面直接就能用了-0-
+    MoveBox.prototype._preloadImg = function (imgs, callback) {
+      var loadedCount = 0,
+          imgCount = 0,
+          resImgs = {};
+
+      imgCount = Object.keys(imgs).length;
+    
+      Object.keys(imgs).forEach(key => {
+        resImgs[key] = new Image();
+        resImgs[key].src = imgs[key];
+        //  如果onload的数量和总数相等就将resImgs传到cb
+        resImgs[key].onload = function () {
+          loadedCount++;
+          if (loadedCount === imgCount) {
+            callback(resImgs)
+          }
+        }
+      })
+    }
+
+    //  内部游戏初始化
+    MoveBox.prototype._init = function () {
+      this._curPersonDir = 'down';
+      //  拷贝地图数据，避免后续操作修改数据的时候改动原始数组导致选关的时候保存了之前的操作数据。
+      this._curMap = this._copyArr(levels[this._curLevel]);
+      this._steps = 0;
+      this.maxRow = this._curMap.length;
+      this.maxCol = this._curMap[0].length;
+      this._drawMap();
+      this.updateStep();
+    }
+
+    //  深拷贝二位数组
+    MoveBox.prototype._copyArr = function (arr) {
+      var resArr = [];
+
+      for (var i = 0, length = arr.length; i < length; i++) {
+        resArr.push(arr[i].slice())
+      }
+
+      return resArr;
+    }
+
+    //  在canvas上绘制图片以形成游戏地图
+    MoveBox.prototype._drawMap = function (needCheck) {
+      for (var i = 0; i < this.maxRow; i++) {
+        for (var j = 0; j < this.maxCol; j++) {
+          // this.ctx.drawImage(this._imgs.floor, 35 * i, 35 * j)
+          var img = 'floor';
+          switch (this._curMap[i][j]) {
+            case 1:
+              img = 'wall';
+              break;
+            case 2:
+              img = 'ball';
+              break;
+            case 3:
+              img = 'box';
+              break;
+            case 4:
+              img = this._curPersonDir;
+              this._curPersonPos = {
+                x: j,
+                y: i
+              }
+              break;
+            case 5:
+              img = 'box';
+              break;
+          }
+
+          if (img !== 'floor') {
+            this.ctx.drawImage(this._imgs.floor, 35 * j + (35 - this._imgs.floor.width) / 2, 35 * i + (35 - this._imgs.floor.height), this._imgs.floor.width, this._imgs.floor.height)
+          }
+          this.ctx.drawImage(this._imgs[img], 35 * j + (35 - this._imgs[img].width) / 2, 35 * i + (35 - this._imgs[img].height), this._imgs[img].width, this._imgs[img].height)
+        }
+      }
+    }
+
+    //  移动小人
+    MoveBox.prototype.moveTo = function (dir) {
+      var beforeOne = {}, beforeTwo = {};
+
+      var dirFn = {
+        down: () => {
+          beforeOne.y = this._curPersonPos.y + 1;
+          beforeOne.x = this._curPersonPos.x;
+          beforeTwo.y = this._curPersonPos.y + 2;
+          beforeTwo.x = this._curPersonPos.x;
+        },
+        up: () => {
+          beforeOne.y = this._curPersonPos.y - 1;
+          beforeOne.x = this._curPersonPos.x;
+          beforeTwo.y = this._curPersonPos.y - 2;
+          beforeTwo.x = this._curPersonPos.x;
+        },
+        left: () => {
+          beforeOne.y = this._curPersonPos.y;
+          beforeOne.x = this._curPersonPos.x - 1;
+          beforeTwo.y = this._curPersonPos.y;
+          beforeTwo.x = this._curPersonPos.x - 2;
+        },
+        right: () => {
+          beforeOne.y = this._curPersonPos.y;
+          beforeOne.x = this._curPersonPos.x + 1;
+          beforeTwo.y = this._curPersonPos.y;
+          beforeTwo.x = this._curPersonPos.x + 2;
+        }
+      }
+
+      dirFn[dir]();
+      this._curPersonDir = dir;
+      if (this._canMove(beforeOne, beforeTwo)) {
+        this._drawMap();
+        this.isShowHelp = false;  //  确保每次移动都会移动数据的反馈
+        this.updateStep();
+        this._isSuccess();
+      }
+    }
+
+    //  判断小人能否移动
+    MoveBox.prototype._canMove = function (beforeOne, beforeTwo) {
+      if (
+        (beforeOne.x < 0 || beforeOne.x >= this.maxCol) ||
+        (beforeOne.y < 0 || beforeOne.y >= this.maxRow) ||
+        (this._curMap[beforeOne.y][beforeOne.x] === 1)
+      ) { //  出边界了，或者说下一个格子是墙，都直接返回false
+        return false;
+      }
+
+      var beforeOneInMap = this._curMap[beforeOne.y][beforeOne.x],
+          beforeTwoInMap = this._curMap[beforeTwo.y][beforeTwo.x]
+
+      //  3或者5表示下一个位置是箱子，如果是箱子的话会涉及到箱子能不能推动，所以要判断第二个位置。
+      if (beforeOneInMap === 3 || beforeOneInMap === 5) {
+        if (
+          beforeTwoInMap === 1 ||
+          (beforeTwoInMap === 3 || beforeTwoInMap === 5)
+        ) { //  下一个位置是箱子，但是再下一个位置还是箱子或者墙，就无法移动
+          return false;
+        } else {
+          //  可以推箱子移动，如果第二个是2，就是表示是要推过去的珠子的地方，就把地图数据置为5，否则就是3表示箱子推过去了
+          this._curMap[beforeTwo.y][beforeTwo.x] = beforeTwoInMap === 2 ? 5 : 3
+        }
+      }
+
+      var originState = levels[this._curLevel][this._curPersonPos.y][this._curPersonPos.x];
+
+      //  将当前地图和原始地图比对。如果当前小人的位置在原始地图中是5或2
+      //  就在移动后将当前位置置为2，如果不是则置为0
+      if (originState === 5 || originState === 2) {
+          this._curMap[this._curPersonPos.y][this._curPersonPos.x] = 2;
+      } else {
+        this._curMap[this._curPersonPos.y][this._curPersonPos.x] = 0;
+      }
+      //  将小人移动到下一个位置
+      this._curMap[beforeOne.y][beforeOne.x] = 4;
+      this._curPersonPos = {
+        x: beforeOne.x,
+        y: beforeOne.y
+      }
+
+      this._steps++;
+      return true
+    }
+
+    //  更新下面的关卡和移动数据
+    MoveBox.prototype.updateStep = function (showHelp) {
+      var txt = '第 '+ (this._curLevel + 1) +' 关, 第 '+ this._steps +' 次移动'
+
+      if (this.isShowHelp) {
+        txt = '使用键盘上下左右控制人物移动，将箱子推到珠子所在地方即通关<br/>可以使用下方按钮进行选关'
+      }
+
+      this.infoDom.innerHTML = txt;
+    }
+
+    //  判断当前关卡是否已经通关
+    MoveBox.prototype._isSuccess = function () {
+      for (var i = 0; i < this.maxRow; i++) {
+        for (var j = 0; j < this.maxCol; j++) {
+          //  将现在的地图和原始地图对比
+          //  原始地图是5的，现在也要是5
+          //  原始地图是2的，现在得是5  ----> 因为箱子推到球上会置为5，原始地图2->5表示玩家把箱子推过去了
+          //  全满足就return true，不然false
+          if (
+            levels[this._curLevel][i][j] === 5 ||
+            levels[this._curLevel][i][j] === 2
+          ) {
+            if (this._curMap[i][j] !== 5) {
+              return false;
+            }
+          }
+        }
+      }
+
+      this._success();
+    }
+
+    //  暴露给外面的通关回调。
+    MoveBox.prototype._success = function () {
+      if (Object.prototype.toString.call(this._successCb) === '[object Function]') {
+        this._successCb();
+      } else {
+        //  如果外部没有提供Cb就使用默认的这个
+        //  给一个setTimeout是为了让最后一步的绘图能画出来，不然alert阻塞最后一步的绘制
+        setTimeout(() => {
+          alert('恭喜通关！点击确认进入下一关')
+          this.nextLevel(true)
+        }, 0)
+      }
+    }
+
+    //  显示游戏帮助信息
+    MoveBox.prototype.showHelp = function () {
+      this.isShowHelp = !this.isShowHelp;
+      this.updateStep();
+    }
+
+    //  选关/下一关/上一关/重玩本关的Api。通过参数number的数据格式来操作
+    MoveBox.prototype.nextLevel = function (number) {
+      var type = Object.prototype.toString.call(number)
+
+      if (type === '[object Boolean]') {  //  true/false表示下/上一关
+        if (number === true) {
+          if (this._curLevel > 99) {
+            return;
+          }
+          this._curLevel++;
+        } else {
+          if (this._curLevel === 0) {
+            return;
+          }
+          this._curLevel--
+        }
+        this._init()
+      } else if (type === '[object Number]') {
+        //  0表示重玩本关
+        if (number === 0) {
+          this._init();
+          return;
+        }
+        //  1-100 表示选关
+        if (number <= 100 && number > 0) {
+          if (number === this._curLevel + 1) {
+            alert('不能跳到当前关卡')
+          } else {
+            this._curLevel = number - 1;
+            this._init()
+          }
+        }
+      }
+    }
+
+    //  初始化整个游戏
+    function init (successFn) {
+      var canvas = document.getElementById('canvas');
+      var ctx = canvas.getContext('2d');
+      var infoDom = document.getElementsByClassName('txt-info')[0];
+      
+      //  传入一些必要的参数，比如canvas上下文和移动数据的Dom，以及第三个可有可无的成功回调函数
+      var obj = new MoveBox(ctx, infoDom, successFn);
+
+      obj.init();
+
+      return {  //  初始化之后将几个需要用到的Api返回给外部
+        nextLevel: obj.nextLevel.bind(obj),
+        moveTo: obj.moveTo.bind(obj),
+        showHelp: obj.showHelp.bind(obj)
+      };
+    }
+
+    //  初始化游戏，把这个丑的要死的modal当success回调传进去（默认是弹窗
+    //  初始化之后会返回几个Api。分别是选关。判断移动和展示游戏帮助信息
+    //  可能这就是强迫症吧-0-
+    var exposedApi = init(modalFn);
+
+    //  万一浏览器太蛋疼或者出现一些莫名其妙的情况做的||？
+    var nextLevel = exposedApi.nextLevel || function () {alert('发生未知错误！maybe换个浏览器？')};
+    var moveTo = exposedApi.moveTo || function () {alert('发生未知错误！maybe换个浏览器？')}
+    var showHelp = exposedApi.showHelp || function () {alert('发生未知错误！maybe换个浏览器？')}
+    var modalBg = document.getElementsByClassName('modal-bg')[0];
+    var modal = document.getElementsByClassName('modal')[0];
+
+    //  modal的显隐藏
+    function modalFn () {
+      modalBg.style.opacity = 1;
+      modalBg.style.zIndex = 2;
+      modal.style.opacity = 1;
+      modal.style.zIndex = 3;
+    }
+
+    function closeModal () {
+      modalBg.style.opacity = 0;
+      modalBg.style.zIndex = -1;
+      modal.style.opacity = 0;
+      modal.style.zIndex = -1;
+    }
+
+    //  选关。先判断输入值是否合法，然后判断关卡数据是否1-100
+    function chooseLevel () {
+      var input = document.getElementById('chooseLevel');
+      var level = +input.value;
+      if (level && (level > 0 && level < 101)) {
+        nextLevel(level)
+      } else {
+        alert('请输入1-100内的数字！')
+      }
+    }
+
+    //  键盘监听事件
+    function keyDown (ev) {
+      var ev = ev || window.event;
+
+      switch (ev.keyCode) {
+        case 37:
+          moveTo('left');
+          break;
+        case 38:
+          moveTo('up');
+          break;
+        case 39:
+          moveTo('right');
+          break;
+        case 40:
+          moveTo('down');
+          break;
+      }
+    }
+  </script>
+</body>
+</html>
